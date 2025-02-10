@@ -31,11 +31,14 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::iterators::StorageIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::{MemTable, MemTableIterator};
+use crate::mem_table::{map_bound, MemTable};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -300,6 +303,7 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
 
+        // From memtable.
         if let Some(value) = snapshot.memtable.get(key) {
             if value.is_empty() {
                 return Ok(None);
@@ -312,6 +316,22 @@ impl LsmStorageInner {
                     return Ok(None);
                 }
                 return Ok(Some(value));
+            }
+        }
+
+        // From sstable.
+        for table_id in snapshot.l0_sstables.iter() {
+            let table = snapshot.sstables.get(table_id).unwrap();
+            let iter =
+                SsTableIterator::create_and_seek_to_key(table.clone(), KeySlice::from_slice(key))?;
+
+            if iter.is_valid() && iter.key().raw_ref() == key {
+                let value = if iter.value().is_empty() {
+                    None
+                } else {
+                    Some(Bytes::copy_from_slice(iter.value()))
+                };
+                return Ok(value);
             }
         }
 
@@ -407,16 +427,88 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
 
+        // Merge memtable iters.
         let mut mem_iters = Vec::with_capacity(1 + sanpshot.imm_memtables.len());
         mem_iters.push(Box::new(sanpshot.memtable.scan(lower, upper)));
         for imm_memtable in sanpshot.imm_memtables.iter() {
             mem_iters.push(Box::new(imm_memtable.scan(lower, upper)));
         }
+        let merged_mem_iter = MergeIterator::create(mem_iters);
 
-        let merged = MergeIterator::create(mem_iters);
-        let lsm_iter = LsmIterator::new(merged)?;
+        // Merge sst iters.
+        let mut sst_iters = Vec::with_capacity(sanpshot.l0_sstables.len());
+        for table_id in sanpshot.l0_sstables.iter() {
+            let table = sanpshot.sstables.get(table_id).unwrap().clone();
+            let in_bound = keys_in_range(
+                table.first_key().as_key_slice(),
+                table.last_key().as_key_slice(),
+                lower,
+                upper,
+            );
+
+            dbg!(in_bound);
+
+            if !in_bound {
+                continue;
+            }
+
+            let iter = match lower {
+                Bound::Included(key) => {
+                    SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?
+                }
+                Bound::Excluded(key) => {
+                    let mut iter =
+                        SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
+                    if iter.is_valid() && iter.key().raw_ref() == key {
+                        iter.next()?;
+                    }
+                    iter
+                }
+                Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
+            };
+            dbg!(iter.key().raw_ref());
+
+            sst_iters.push(Box::new(iter));
+        }
+        let merged_sst_iter = MergeIterator::create(sst_iters);
+
+        // two merge
+        let two_merge_iter = TwoMergeIterator::create(merged_mem_iter, merged_sst_iter)?;
+
+        let lsm_iter = LsmIterator::new(two_merge_iter, map_bound(upper))?;
         let fused_iter = FusedIterator::new(lsm_iter);
 
         return Ok(fused_iter);
     }
+}
+
+fn keys_in_range(
+    first_key: KeySlice,
+    last_key: KeySlice,
+    lower: Bound<&[u8]>,
+    upper: Bound<&[u8]>,
+) -> bool {
+    dbg!(
+        String::from_utf8(first_key.raw_ref().to_vec()).unwrap(),
+        String::from_utf8(last_key.raw_ref().to_vec()).unwrap(),
+        lower,
+        upper
+    );
+    let upper = match upper {
+        Bound::Included(key) => first_key.raw_ref() <= key,
+        Bound::Excluded(key) => first_key.raw_ref() < key,
+        Bound::Unbounded => true,
+    };
+    dbg!(upper);
+    if !upper {
+        return false;
+    }
+
+    let lower = match lower {
+        Bound::Included(key) => key <= last_key.raw_ref(),
+        Bound::Excluded(key) => key < last_key.raw_ref(),
+        Bound::Unbounded => true,
+    };
+    dbg!(lower);
+    lower
 }

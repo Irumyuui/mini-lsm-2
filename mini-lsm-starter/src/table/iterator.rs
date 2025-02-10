@@ -57,6 +57,9 @@ impl SsTableIterator {
             blk = table.read_block_cached(index)?;
             iter = BlockIterator::create_and_seek_to_first(blk);
         }
+
+        dbg!(iter.key().raw_ref());
+
         return Ok(Self {
             table,
             blk_iter: iter,

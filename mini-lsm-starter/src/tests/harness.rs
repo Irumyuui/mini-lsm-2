@@ -108,6 +108,7 @@ where
     I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
 {
     for (k, v) in expected {
+        println!("k: {:?}, v: {:?}", k, v);
         assert!(iter.is_valid());
         assert_eq!(
             k,
@@ -163,6 +164,7 @@ pub fn check_lsm_iter_result_by_key<I>(iter: &mut I, expected: Vec<(Bytes, Bytes
 where
     I: for<'a> StorageIterator<KeyType<'a> = &'a [u8]>,
 {
+    dbg!(&expected);
     for (k, v) in expected {
         assert!(iter.is_valid());
         assert_eq!(

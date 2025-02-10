@@ -25,6 +25,7 @@ pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
     // Add fields as need
+    use_a: bool, // 缓存是否使用 a
 }
 
 impl<
@@ -33,7 +34,28 @@ impl<
     > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        let mut this = Self { a, b, use_a: false };
+        this.skip_b()?;
+        this.use_a = this.use_a();
+        Ok(this)
+    }
+
+    #[must_use]
+    fn use_a(&self) -> bool {
+        dbg!(self.a.is_valid(), self.b.is_valid());
+        if !self.a.is_valid() {
+            return false;
+        } else if !self.b.is_valid() {
+            return true;
+        }
+        self.a.key() < self.b.key()
+    }
+
+    fn skip_b(&mut self) -> Result<()> {
+        while self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
+            self.b.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -45,18 +67,41 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if self.use_a {
+            self.a.key()
+        } else {
+            self.b.key()
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if self.use_a {
+            self.a.value()
+        } else {
+            self.b.value()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        println!("use_a: {:?}", self.use_a);
+
+        if self.use_a {
+            self.a.is_valid()
+        } else {
+            self.b.is_valid()
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if self.use_a {
+            self.a.next()?;
+        } else {
+            self.b.next()?;
+        }
+
+        self.skip_b()?;
+        self.use_a = self.use_a();
+
+        Ok(())
     }
 }
