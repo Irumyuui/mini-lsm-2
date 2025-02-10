@@ -58,7 +58,7 @@ impl SsTableIterator {
             iter = BlockIterator::create_and_seek_to_first(blk);
         }
 
-        dbg!(iter.key().raw_ref());
+        // dbg!(iter.key().raw_ref());
 
         return Ok(Self {
             table,

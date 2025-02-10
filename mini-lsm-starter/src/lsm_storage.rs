@@ -301,8 +301,6 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        eprintln!("find key: {}", String::from_utf8(key.to_vec()).unwrap());
-
         let snapshot = {
             let guard = self.state.read();
             Arc::clone(&guard)
@@ -346,7 +344,7 @@ impl LsmStorageInner {
             }
         }
         for (level, table_ids) in snapshot.levels.iter() {
-            eprintln!("find level: {level}");
+            // eprintln!("find level: {level}");
 
             let tables: Vec<_> = table_ids
                 .iter()
@@ -356,11 +354,6 @@ impl LsmStorageInner {
             let iter =
                 SstConcatIterator::create_and_seek_to_key(tables, KeySlice::from_slice(key))?;
             if iter.is_valid() && iter.key().raw_ref() == key {
-                eprintln!(
-                    "find level key: {}",
-                    String::from_utf8(iter.key().raw_ref().to_vec()).unwrap()
-                );
-
                 let value = if iter.value().is_empty() {
                     None
                 } else {
@@ -507,9 +500,6 @@ impl LsmStorageInner {
                 lower,
                 upper,
             );
-
-            dbg!(in_bound);
-
             if !in_bound {
                 continue;
             }
@@ -528,43 +518,88 @@ impl LsmStorageInner {
                 }
                 Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
             };
-            dbg!(iter.key().raw_ref());
+            // dbg!(iter.key().raw_ref());
 
             sst_iters.push(Box::new(iter));
         }
         let l0_iter = MergeIterator::create(sst_iters);
 
-        // l1
-        let l1_tables = sanpshot.levels[0]
-            .1
-            .iter()
-            .map(|id| sanpshot.sstables.get(id).unwrap().clone())
-            .collect();
-        let l1_iter = match lower {
-            Bound::Included(key) => {
-                SstConcatIterator::create_and_seek_to_key(l1_tables, KeySlice::from_slice(key))?
-            }
-            Bound::Excluded(key) => {
-                let mut iter = SstConcatIterator::create_and_seek_to_key(
-                    l1_tables,
-                    KeySlice::from_slice(key),
-                )?;
-                if iter.is_valid() && iter.key().raw_ref() == key {
-                    iter.next()?;
-                }
-                iter
-            }
-            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_tables)?,
-        };
+        // level
+        let mut level_iters = Vec::with_capacity(sanpshot.levels.len());
+        for (_, level_sst_ids) in sanpshot.levels.iter() {
+            let level_ssts = level_sst_ids
+                .iter()
+                .map(|id| sanpshot.sstables.get(id).unwrap().clone())
+                .filter(|table| {
+                    keys_in_range(
+                        table.first_key().as_key_slice(),
+                        table.last_key().as_key_slice(),
+                        lower,
+                        upper,
+                    )
+                })
+                .collect();
 
-        // two merge
+            let level_iter = match lower {
+                Bound::Included(key) => SstConcatIterator::create_and_seek_to_key(
+                    level_ssts,
+                    KeySlice::from_slice(key),
+                )?,
+                Bound::Excluded(key) => {
+                    let mut iter = SstConcatIterator::create_and_seek_to_key(
+                        level_ssts,
+                        KeySlice::from_slice(key),
+                    )?;
+                    if iter.is_valid() && iter.key().raw_ref() == key {
+                        iter.next()?;
+                    }
+                    iter
+                }
+                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(level_ssts)?,
+            };
+
+            level_iters.push(Box::new(level_iter));
+        }
+
         let iter = TwoMergeIterator::create(merged_mem_iter, l0_iter)?;
-        let iter = TwoMergeIterator::create(iter, l1_iter)?;
+        let iter = TwoMergeIterator::create(iter, MergeIterator::create(level_iters))?;
 
         let lsm_iter = LsmIterator::new(iter, map_bound(upper))?;
         let fused_iter = FusedIterator::new(lsm_iter);
 
         return Ok(fused_iter);
+
+        // let l1_tables = sanpshot.levels[0]
+        //     .1
+        //     .iter()
+        //     .map(|id| sanpshot.sstables.get(id).unwrap().clone())
+        //     .collect();
+        // let l1_iter = match lower {
+        //     Bound::Included(key) => {
+        //         SstConcatIterator::create_and_seek_to_key(l1_tables, KeySlice::from_slice(key))?
+        //     }
+        //     Bound::Excluded(key) => {
+        //         let mut iter = SstConcatIterator::create_and_seek_to_key(
+        //             l1_tables,
+        //             KeySlice::from_slice(key),
+        //         )?;
+        //         if iter.is_valid() && iter.key().raw_ref() == key {
+        //             iter.next()?;
+        //         }
+        //         iter
+        //     }
+        //     Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_tables)?,
+        // };
+
+        // // two merge
+        // let iter = TwoMergeIterator::create(merged_mem_iter, l0_iter)?;
+        // let iter = TwoMergeIterator::create(iter, l1_iter)?;
+
+        // let lsm_iter = LsmIterator::new(iter, map_bound(upper))?;
+        // let fused_iter = FusedIterator::new(lsm_iter);
+
+        // return Ok(fused_iter);
+        // todo!()
     }
 }
 
@@ -574,18 +609,18 @@ fn keys_in_range(
     lower: Bound<&[u8]>,
     upper: Bound<&[u8]>,
 ) -> bool {
-    dbg!(
-        String::from_utf8(first_key.raw_ref().to_vec()).unwrap(),
-        String::from_utf8(last_key.raw_ref().to_vec()).unwrap(),
-        lower,
-        upper
-    );
+    // dbg!(
+    //     String::from_utf8(first_key.raw_ref().to_vec()).unwrap(),
+    //     String::from_utf8(last_key.raw_ref().to_vec()).unwrap(),
+    //     lower,
+    //     upper
+    // );
     let upper = match upper {
         Bound::Included(key) => first_key.raw_ref() <= key,
         Bound::Excluded(key) => first_key.raw_ref() < key,
         Bound::Unbounded => true,
     };
-    dbg!(upper);
+    // dbg!(upper);
     if !upper {
         return false;
     }
@@ -595,6 +630,6 @@ fn keys_in_range(
         Bound::Excluded(key) => key < last_key.raw_ref(),
         Bound::Unbounded => true,
     };
-    dbg!(lower);
+    // dbg!(lower);
     lower
 }

@@ -208,7 +208,7 @@ impl StorageIterator for MemTableIterator {
             } else {
                 *this.item = (Bytes::new(), Bytes::new());
             }
-            dbg!(&this.item);
+            // dbg!(&this.item);
         });
         Ok(())
     }
