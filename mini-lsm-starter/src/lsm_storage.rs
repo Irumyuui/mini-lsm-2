@@ -17,7 +17,9 @@
 
 use std::collections::HashMap;
 use std::ops::Bound;
+use std::os::unix::thread::JoinHandleExt;
 use std::path::{Path, PathBuf};
+use std::str::Utf8Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -30,6 +32,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
@@ -298,6 +301,8 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        eprintln!("find key: {}", String::from_utf8(key.to_vec()).unwrap());
+
         let snapshot = {
             let guard = self.state.read();
             Arc::clone(&guard)
@@ -332,6 +337,30 @@ impl LsmStorageInner {
                 SsTableIterator::create_and_seek_to_key(table.clone(), KeySlice::from_slice(key))?;
 
             if iter.is_valid() && iter.key().raw_ref() == key {
+                let value = if iter.value().is_empty() {
+                    None
+                } else {
+                    Some(Bytes::copy_from_slice(iter.value()))
+                };
+                return Ok(value);
+            }
+        }
+        for (level, table_ids) in snapshot.levels.iter() {
+            eprintln!("find level: {level}");
+
+            let tables: Vec<_> = table_ids
+                .iter()
+                .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                .collect();
+
+            let iter =
+                SstConcatIterator::create_and_seek_to_key(tables, KeySlice::from_slice(key))?;
+            if iter.is_valid() && iter.key().raw_ref() == key {
+                eprintln!(
+                    "find level key: {}",
+                    String::from_utf8(iter.key().raw_ref().to_vec()).unwrap()
+                );
+
                 let value = if iter.value().is_empty() {
                     None
                 } else {
@@ -468,7 +497,7 @@ impl LsmStorageInner {
         }
         let merged_mem_iter = MergeIterator::create(mem_iters);
 
-        // Merge sst iters.
+        // Merge l0 sst iters.
         let mut sst_iters = Vec::with_capacity(sanpshot.l0_sstables.len());
         for table_id in sanpshot.l0_sstables.iter() {
             let table = sanpshot.sstables.get(table_id).unwrap().clone();
@@ -503,12 +532,36 @@ impl LsmStorageInner {
 
             sst_iters.push(Box::new(iter));
         }
-        let merged_sst_iter = MergeIterator::create(sst_iters);
+        let l0_iter = MergeIterator::create(sst_iters);
+
+        // l1
+        let l1_tables = sanpshot.levels[0]
+            .1
+            .iter()
+            .map(|id| sanpshot.sstables.get(id).unwrap().clone())
+            .collect();
+        let l1_iter = match lower {
+            Bound::Included(key) => {
+                SstConcatIterator::create_and_seek_to_key(l1_tables, KeySlice::from_slice(key))?
+            }
+            Bound::Excluded(key) => {
+                let mut iter = SstConcatIterator::create_and_seek_to_key(
+                    l1_tables,
+                    KeySlice::from_slice(key),
+                )?;
+                if iter.is_valid() && iter.key().raw_ref() == key {
+                    iter.next()?;
+                }
+                iter
+            }
+            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_tables)?,
+        };
 
         // two merge
-        let two_merge_iter = TwoMergeIterator::create(merged_mem_iter, merged_sst_iter)?;
+        let iter = TwoMergeIterator::create(merged_mem_iter, l0_iter)?;
+        let iter = TwoMergeIterator::create(iter, l1_iter)?;
 
-        let lsm_iter = LsmIterator::new(two_merge_iter, map_bound(upper))?;
+        let lsm_iter = LsmIterator::new(iter, map_bound(upper))?;
         let fused_iter = FusedIterator::new(lsm_iter);
 
         return Ok(fused_iter);

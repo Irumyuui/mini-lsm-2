@@ -7,5 +7,6 @@ mod week1_day3;
 mod harness;
 mod week1_day2;
 mod week1_day5;
+mod week2_day1;
 mod week1_day1;
 mod week1_day7;

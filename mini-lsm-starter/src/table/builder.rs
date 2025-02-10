@@ -63,17 +63,21 @@ impl SsTableBuilder {
             self.first_key.extend_from_slice(key.raw_ref());
         }
 
-        if !self.builder.add(key, value) {
-            self.finish_block();
-            self.first_key.extend_from_slice(key.raw_ref());
-            let res = self.builder.add(key, value);
-            assert!(res);
-        }
-
         self.key_hashs.push(farmhash::fingerprint32(&key.raw_ref()));
 
+        if self.builder.add(key, value) {
+            self.last_key.clear();
+            self.last_key.extend_from_slice(&key.raw_ref());
+            return;
+        }
+
+        self.finish_block();
+
+        assert!(self.builder.add(key, value));
+        self.first_key.clear();
+        self.first_key.extend_from_slice(&key.raw_ref());
         self.last_key.clear();
-        self.last_key.extend_from_slice(key.raw_ref());
+        self.last_key.extend_from_slice(&key.raw_ref());
     }
 
     fn finish_block(&mut self) {

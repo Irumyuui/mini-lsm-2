@@ -42,7 +42,6 @@ impl<
 
     #[must_use]
     fn use_a(&self) -> bool {
-        dbg!(self.a.is_valid(), self.b.is_valid());
         if !self.a.is_valid() {
             return false;
         } else if !self.b.is_valid() {
