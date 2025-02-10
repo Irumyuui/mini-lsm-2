@@ -322,6 +322,12 @@ impl LsmStorageInner {
         // From sstable.
         for table_id in snapshot.l0_sstables.iter() {
             let table = snapshot.sstables.get(table_id).unwrap();
+            if let Some(ref bloom) = table.bloom {
+                if !bloom.may_contain(farmhash::fingerprint32(key)) {
+                    continue;
+                }
+            }
+
             let iter =
                 SsTableIterator::create_and_seek_to_key(table.clone(), KeySlice::from_slice(key))?;
 

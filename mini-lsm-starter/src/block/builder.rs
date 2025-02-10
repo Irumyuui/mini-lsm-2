@@ -47,19 +47,30 @@ impl BlockBuilder {
     /// Adds a key-value pair to the block. Returns false when the block is full.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
+        let prefix_overlap_len = calc_prefix_overlap(self.first_key.as_key_slice(), key);
+        let rest_key_len = key.len() - prefix_overlap_len;
+
         if !self.is_empty()
-            && self.current_size() + 2 + key.len() + 2 + value.len() + std::mem::size_of::<u16>()
-                > self.block_size
+            && self.current_size() + 2 + 2 + rest_key_len + 2 + value.len() + 2 > self.block_size
         {
             return false;
         }
 
         let offset = self.data.len();
-        self.data.put_u16(key.len() as _);
-        self.data.extend_from_slice(key.raw_ref());
+        self.data.put_u16(prefix_overlap_len as u16);
+        self.data.put_u16(rest_key_len as u16);
+        self.data
+            .extend_from_slice(key.raw_ref()[prefix_overlap_len..].as_ref());
+
         self.data.put_u16(value.len() as _);
         self.data.extend_from_slice(value);
         self.offsets.push(offset as u16);
+
+        // 每一个块的第一个 key 作为 first_key，完全存储
+        if self.first_key.is_empty() {
+            self.first_key.set_from_slice(key);
+        }
+
         return true;
     }
 
@@ -81,4 +92,16 @@ impl BlockBuilder {
             + self.offsets.len() * std::mem::size_of::<u16>()
             + std::mem::size_of::<u16>()
     }
+}
+
+fn calc_prefix_overlap(first_key: KeySlice, key: KeySlice) -> usize {
+    let mut i = 0;
+    let max_len = first_key.len().min(key.len());
+    while i < max_len {
+        if first_key.raw_ref()[i] != key.raw_ref()[i] {
+            break;
+        }
+        i += 1;
+    }
+    i
 }

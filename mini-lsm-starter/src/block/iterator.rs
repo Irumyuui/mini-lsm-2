@@ -39,12 +39,14 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
+        let first_key = block.first_key().to_key_vec();
+
         Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
-            first_key: KeyVec::new(),
+            first_key,
         }
     }
 
@@ -121,12 +123,20 @@ impl BlockIterator {
 
         let start = self.block.offsets[index] as usize;
         let mut entry = self.block.data[start..].as_ref();
-        let key_len = entry.get_u16() as usize;
+
+        let key_overlap_len = entry.get_u16() as usize;
+        let rest_key_len = entry.get_u16() as usize;
+        self.key.clear();
         self.key
-            .set_from_slice(KeySlice::from_slice(entry[..key_len].as_ref()));
-        entry.advance(key_len);
+            .append(self.first_key.raw_ref()[..key_overlap_len].as_ref());
+        self.key.append(entry[..rest_key_len].as_ref());
+        entry.advance(rest_key_len);
+
         let value_len = entry.get_u16() as usize;
-        self.value_range = (start + 2 + key_len + 2, start + 2 + key_len + 2 + value_len);
+        self.value_range = (
+            start + 2 + 2 + rest_key_len + 2,
+            start + 2 + 2 + rest_key_len + 2 + value_len,
+        );
         self.idx = index;
 
         return true;

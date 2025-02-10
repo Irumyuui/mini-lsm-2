@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::{BufMut, Bytes};
 
-use super::{BlockMeta, SsTable};
+use super::{bloom::Bloom, BlockMeta, SsTable};
 use crate::{
     block::BlockBuilder,
     key::{KeyBytes, KeySlice},
@@ -32,6 +32,7 @@ use crate::{
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
+    key_hashs: Vec<u32>,
     first_key: Vec<u8>,
     last_key: Vec<u8>,
     data: Vec<u8>,
@@ -44,6 +45,7 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
+            key_hashs: vec![],
             first_key: Vec::new(),
             last_key: Vec::new(),
             data: Vec::new(),
@@ -67,6 +69,8 @@ impl SsTableBuilder {
             let res = self.builder.add(key, value);
             assert!(res);
         }
+
+        self.key_hashs.push(farmhash::fingerprint32(&key.raw_ref()));
 
         self.last_key.clear();
         self.last_key.extend_from_slice(key.raw_ref());
@@ -109,6 +113,14 @@ impl SsTableBuilder {
         BlockMeta::encode_block_meta(&block_meta, &mut buf);
         buf.put_u32(meta_offset as _);
 
+        let bloom = Bloom::build_from_key_hashes(
+            &self.key_hashs,
+            Bloom::bloom_bits_per_key(self.key_hashs.len(), 0.01),
+        );
+        let bloom_offset = buf.len();
+        bloom.encode(&mut buf);
+        buf.put_u32(bloom_offset as _);
+
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
 
@@ -122,7 +134,7 @@ impl SsTableBuilder {
             last_key,
             block_meta,
             block_meta_offset: meta_offset,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         };
 
