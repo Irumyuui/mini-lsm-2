@@ -131,4 +131,15 @@ where
 
         Ok(())
     }
+
+    fn num_active_iterators(&self) -> usize {
+        self.iters
+            .iter()
+            .map(|iter| iter.1.num_active_iterators())
+            .sum::<usize>()
+            + self
+                .current
+                .as_ref()
+                .map_or(0, |iter| iter.1.num_active_iterators())
+    }
 }
