@@ -457,8 +457,20 @@ impl LsmStorageInner {
             let mut snapshot = guard.as_ref().clone();
 
             snapshot.imm_memtables.pop();
-            snapshot.l0_sstables.insert(0, id);
-            snapshot.sstables.insert(id, sst);
+
+            if self.compaction_controller.flush_to_l0() {
+                snapshot.l0_sstables.insert(0, sst.sst_id());
+            } else {
+                // tierd compaction
+                snapshot
+                    .levels
+                    .insert(0, (sst.sst_id(), vec![sst.sst_id()]));
+            }
+
+            eprintln!("new sstable: {}", sst.sst_id());
+            eprintln!("prev sstable: {:?}", snapshot.sstables.keys());
+            snapshot.sstables.insert(sst.sst_id(), sst);
+            eprintln!("after sstable: {:?}", snapshot.sstables.keys());
 
             *guard = Arc::new(snapshot);
         }
@@ -568,38 +580,6 @@ impl LsmStorageInner {
         let fused_iter = FusedIterator::new(lsm_iter);
 
         return Ok(fused_iter);
-
-        // let l1_tables = sanpshot.levels[0]
-        //     .1
-        //     .iter()
-        //     .map(|id| sanpshot.sstables.get(id).unwrap().clone())
-        //     .collect();
-        // let l1_iter = match lower {
-        //     Bound::Included(key) => {
-        //         SstConcatIterator::create_and_seek_to_key(l1_tables, KeySlice::from_slice(key))?
-        //     }
-        //     Bound::Excluded(key) => {
-        //         let mut iter = SstConcatIterator::create_and_seek_to_key(
-        //             l1_tables,
-        //             KeySlice::from_slice(key),
-        //         )?;
-        //         if iter.is_valid() && iter.key().raw_ref() == key {
-        //             iter.next()?;
-        //         }
-        //         iter
-        //     }
-        //     Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_tables)?,
-        // };
-
-        // // two merge
-        // let iter = TwoMergeIterator::create(merged_mem_iter, l0_iter)?;
-        // let iter = TwoMergeIterator::create(iter, l1_iter)?;
-
-        // let lsm_iter = LsmIterator::new(iter, map_bound(upper))?;
-        // let fused_iter = FusedIterator::new(lsm_iter);
-
-        // return Ok(fused_iter);
-        // todo!()
     }
 }
 

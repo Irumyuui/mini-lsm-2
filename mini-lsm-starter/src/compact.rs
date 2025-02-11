@@ -252,7 +252,32 @@ impl LsmStorageInner {
 
         match task {
             CompactionTask::Leveled(_) => todo!(),
-            CompactionTask::Tiered(_) => todo!(),
+            CompactionTask::Tiered(task) => {
+                let mut iters = Vec::with_capacity(task.tiers.len());
+                for (_, ids) in task.tiers.iter() {
+                    let tables =
+                        ids.iter()
+                            .map(|id| {
+                                snapshot
+                                    .sstables
+                                    .get(id)
+                                    .expect(
+                                        format!(
+                                        "{} not found, \ntires: {:?}, \nlevel: {:?}, \ntable ids: {:?}",
+                                        id, task.tiers, snapshot.levels, snapshot.sstables.keys()
+                                    )
+                                        .as_str(),
+                                    )
+                                    .clone()
+                            })
+                            .collect();
+                    let iter = SstConcatIterator::create_and_seek_to_first(tables)?;
+                    iters.push(Box::new(iter));
+                }
+
+                let iter = MergeIterator::create(iters);
+                return self.compact_generate_sst_from_iter(iter, task.bottom_tier_included);
+            }
             CompactionTask::Simple(SimpleLeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
