@@ -251,7 +251,43 @@ impl LsmStorageInner {
         let snapshot = { self.state.read().as_ref().clone() };
 
         match task {
-            CompactionTask::Leveled(_) => todo!(),
+            CompactionTask::Leveled(t) => {
+                if t.upper_level.is_some() {
+                    let upper_ssts = t
+                        .upper_level_sst_ids
+                        .iter()
+                        .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                        .collect();
+                    let lower_ssts = t
+                        .lower_level_sst_ids
+                        .iter()
+                        .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                        .collect();
+                    let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_ssts)?;
+                    let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
+                    return self.compact_generate_sst_from_iter(
+                        TwoMergeIterator::create(upper_iter, lower_iter)?,
+                        task.compact_to_bottom_level(),
+                    );
+                } else {
+                    let mut upper_iter = Vec::with_capacity(t.upper_level_sst_ids.len());
+                    for id in t.upper_level_sst_ids.iter() {
+                        let table = snapshot.sstables.get(id).unwrap();
+                        let iter = SsTableIterator::create_and_seek_to_first(table.clone())?;
+                        upper_iter.push(Box::new(iter));
+                    }
+                    let lower_ssts = t
+                        .lower_level_sst_ids
+                        .iter()
+                        .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                        .collect();
+                    let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
+                    let iter =
+                        TwoMergeIterator::create(MergeIterator::create(upper_iter), lower_iter)?;
+                    return self
+                        .compact_generate_sst_from_iter(iter, task.compact_to_bottom_level());
+                }
+            }
             CompactionTask::Tiered(task) => {
                 let mut iters = Vec::with_capacity(task.tiers.len());
                 for (_, ids) in task.tiers.iter() {
